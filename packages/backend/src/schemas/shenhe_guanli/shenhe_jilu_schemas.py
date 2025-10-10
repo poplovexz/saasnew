@@ -1,7 +1,7 @@
 """
 审核记录数据模式
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,8 @@ class ShenheJiluResponse(BaseModel):
     jilu_zhuangtai: str
     qiwang_chuli_shijian: Optional[datetime]
     beizhu: Optional[str]
+    biaodan_peizhi: Optional[Dict[str, Any]] = None
+    zidingyi_shuju: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -76,3 +78,4 @@ class ShenheActionRequest(BaseModel):
     shenhe_yijian: Optional[str] = Field(None, description="审核意见")
     fujian_lujing: Optional[str] = Field(None, description="附件文件路径")
     fujian_miaoshu: Optional[str] = Field(None, description="附件描述")
+    zidingyi_shuju: Optional[Dict[str, Any]] = Field(None, description="自定义表单数据")

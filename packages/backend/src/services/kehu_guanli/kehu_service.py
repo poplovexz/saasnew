@@ -1,6 +1,7 @@
 """
 客户管理服务
 """
+import logging
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -13,6 +14,8 @@ from schemas.kehu_guanli.kehu_schemas import (
     KehuResponse,
     KehuListResponse
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KehuService:
@@ -94,6 +97,76 @@ class KehuService:
             page=page,
             size=size
         )
+    
+    def find_duplicate_kehu(
+        self, 
+        lianxi_dianhua: Optional[str] = None,
+        tongyi_shehui_xinyong_daima: Optional[str] = None
+    ) -> Optional[KehuResponse]:
+        """查找重复客户（通过手机号或统一社会信用代码）"""
+        if not lianxi_dianhua and not tongyi_shehui_xinyong_daima:
+            return None
+        
+        duplicate_filters = []
+        
+        if lianxi_dianhua:
+            duplicate_filters.append(Kehu.lianxi_dianhua == lianxi_dianhua)
+        
+        if tongyi_shehui_xinyong_daima:
+            duplicate_filters.append(
+                Kehu.tongyi_shehui_xinyong_daima == tongyi_shehui_xinyong_daima
+            )
+        
+        kehu = self.db.query(Kehu).filter(
+            or_(*duplicate_filters),
+            Kehu.is_deleted == "N"
+        ).first()
+        
+        if kehu:
+            return KehuResponse.model_validate(kehu)
+        
+        return None
+    
+    def create_kehu_from_xiansuo(
+        self, 
+        xiansuo_id: str, 
+        created_by: str
+    ) -> KehuResponse:
+        """从线索自动创建客户（含重复检测）"""
+        from models.xiansuo_guanli.xiansuo import Xiansuo
+        
+        xiansuo = self.db.query(Xiansuo).filter(
+            Xiansuo.id == xiansuo_id,
+            Xiansuo.is_deleted == "N"
+        ).first()
+        
+        if not xiansuo:
+            raise HTTPException(status_code=404, detail="线索不存在")
+        
+        existing = self.find_duplicate_kehu(
+            lianxi_dianhua=xiansuo.lianxi_dianhua,
+            tongyi_shehui_xinyong_daima=None
+        )
+        
+        if existing:
+            logger.info(f"找到重复客户，复用: kehu_id={existing.id}, phone={xiansuo.lianxi_dianhua}")
+            return existing
+        
+        kehu_data = KehuCreate(
+            gongsi_mingcheng=xiansuo.gongsi_mingcheng,
+            tongyi_shehui_xinyong_daima=None,
+            faren_xingming=xiansuo.lianxi_ren,
+            lianxi_dianhua=xiansuo.lianxi_dianhua,
+            lianxi_youxiang=xiansuo.lianxi_youxiang,
+            hangye_leixing=xiansuo.hangye_leixing,
+            gongsi_guimo=xiansuo.gongsi_guimo,
+            zhuce_dizhi=xiansuo.zhuce_dizhi,
+            kehu_zhuangtai="active",
+            kehu_laiyuan="xiansuo_zhuanhua",
+            beizhu=f"由线索 {xiansuo.xiansuo_bianma} 自动转化生成"
+        )
+        
+        return self.create_kehu(kehu_data, created_by)
     
     def update_kehu(self, kehu_id: str, kehu_data: KehuUpdate, updated_by: str) -> KehuResponse:
         """更新客户"""

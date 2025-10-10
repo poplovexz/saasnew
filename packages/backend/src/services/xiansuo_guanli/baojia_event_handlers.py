@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def handle_baojia_confirmed(payload: Dict[str, Any]) -> None:
-    """处理报价确认事件
+    """处理报价确认事件 - 自动创建客户并触发合同生成
     
     Args:
         payload: 事件数据，包含 baojia_id, xiansuo_id, queren_ren_id 等
@@ -33,50 +33,77 @@ def handle_baojia_confirmed(payload: Dict[str, Any]) -> None:
         
         db = SessionLocal()
         try:
-            # 1. 更新线索状态为"已报价"
             xiansuo = db.query(Xiansuo).filter(Xiansuo.id == xiansuo_id).first()
-            if xiansuo:
-                # 如果线索当前状态不是终态，则更新为"已报价"
-                if xiansuo.dangqian_zhuangtai not in ["won", "lost"]:
-                    xiansuo.dangqian_zhuangtai = "quoted"
-                    logger.info(f"线索状态已更新为'quoted': {xiansuo_id}")
-                else:
-                    logger.info(f"线索已处于终态，跳过状态更新: {xiansuo_id} -> {xiansuo.dangqian_zhuangtai}")
-            else:
+            if not xiansuo:
                 logger.warning(f"未找到线索: {xiansuo_id}")
+                return
             
-            # 2. 触发合同草稿生成事件
+            if xiansuo.dangqian_zhuangtai not in ["won", "lost"]:
+                xiansuo.dangqian_zhuangtai = "quoted"
+                logger.info(f"线索状态已更新为'quoted': {xiansuo_id}")
+            
+            kehu_id = xiansuo.kehu_id
+            if not kehu_id:
+                from services.kehu_guanli.kehu_service import KehuService
+                
+                kehu_service = KehuService(db)
+                
+                try:
+                    kehu_response = kehu_service.create_kehu_from_xiansuo(
+                        xiansuo_id=xiansuo_id,
+                        created_by=queren_ren_id or "system"
+                    )
+                    kehu_id = kehu_response.id
+                    
+                    xiansuo.kehu_id = kehu_id
+                    xiansuo.shi_zhuanhua = "Y"
+                    xiansuo.zhuanhua_shijian = datetime.now()
+                    
+                    logger.info(f"客户创建成功: kehu_id={kehu_id}, xiansuo_id={xiansuo_id}")
+                    
+                except Exception as customer_error:
+                    logger.error(f"创建客户失败: {customer_error}", exc_info=True)
+                    _log_baojia_business_event(
+                        db, baojia_id, "customer_creation_failed",
+                        f"客户创建失败: {str(customer_error)}",
+                        queren_ren_id
+                    )
+                    db.rollback()
+                    return
+            else:
+                logger.info(f"线索已关联客户: kehu_id={kehu_id}")
+            
             from core.events import publish
             hetong_payload = {
                 "baojia_id": baojia_id,
                 "xiansuo_id": xiansuo_id,
+                "kehu_id": kehu_id,
                 "queren_ren_id": queren_ren_id,
                 "trigger_time": datetime.now().isoformat(),
                 "trigger_reason": "baojia_confirmed"
             }
             
             publish(EventNames.HETONG_DRAFT_TRIGGERED, hetong_payload)
-            logger.info(f"已触发合同草稿生成事件: {hetong_payload}")
+            logger.info(f"已触发合同草稿生成事件")
             
-            # 3. 记录业务日志
             _log_baojia_business_event(
-                db, baojia_id, "confirmed", 
-                f"报价确认成功，线索状态更新，合同草稿生成已触发", 
+                db, baojia_id, "confirmed",
+                f"报价确认成功，客户ID: {kehu_id}",
                 queren_ren_id
             )
             
             db.commit()
-            logger.info(f"报价确认事件处理完成: {baojia_id}")
+            logger.info(f"报价确认事件处理完成: baojia_id={baojia_id}, kehu_id={kehu_id}")
             
         except Exception as e:
             db.rollback()
-            logger.error(f"处理报价确认事件时发生数据库错误: {e}")
+            logger.error(f"处理报价确认事件时发生数据库错误: {e}", exc_info=True)
             raise
         finally:
             db.close()
             
     except Exception as e:
-        logger.error(f"处理报价确认事件失败: {e}")
+        logger.error(f"处理报价确认事件失败: {e}", exc_info=True)
         raise
 
 
@@ -131,49 +158,34 @@ def handle_baojia_rejected(payload: Dict[str, Any]) -> None:
 
 
 def handle_hetong_draft_triggered(payload: Dict[str, Any]) -> None:
-    """处理合同草稿触发事件
+    """处理合同草稿触发事件 - 验证客户ID并生成合同
     
     Args:
-        payload: 事件数据，包含 baojia_id, xiansuo_id 等
+        payload: 事件数据，包含 baojia_id, xiansuo_id, kehu_id 等
     """
     try:
         baojia_id = payload.get("baojia_id")
         xiansuo_id = payload.get("xiansuo_id")
+        kehu_id = payload.get("kehu_id")
         trigger_reason = payload.get("trigger_reason", "unknown")
         
-        logger.info(f"处理合同草稿触发事件: 报价ID={baojia_id}, 线索ID={xiansuo_id}, 触发原因={trigger_reason}")
+        logger.info(f"处理合同草稿触发事件: 报价ID={baojia_id}, 线索ID={xiansuo_id}, 客户ID={kehu_id}, 触发原因={trigger_reason}")
         
-        # 阶段1：仅记录合同草稿生成意图，不实际生成合同
-        # 在阶段2中将实现真正的合同生成逻辑
+        if not kehu_id:
+            logger.error(f"缺少客户ID，无法生成合同: baojia_id={baojia_id}")
+            return
         
         db = SessionLocal()
         try:
-            # 获取报价信息用于合同草稿准备
             baojia = db.query(XiansuoBaojia).filter(XiansuoBaojia.id == baojia_id).first()
             if not baojia:
                 logger.error(f"未找到报价信息: {baojia_id}")
                 return
             
-            # 准备合同草稿所需的上下文信息
-            hetong_context = {
-                "baojia_id": baojia_id,
-                "xiansuo_id": xiansuo_id,
-                "baojia_mingcheng": baojia.baojia_mingcheng,
-                "zongji_jine": float(baojia.zongji_jine),
-                "baojia_bianma": baojia.baojia_bianma,
-                "trigger_time": payload.get("trigger_time"),
-                "status": "pending_generation"  # 待生成状态
-            }
-            
-            # 记录合同草稿生成任务（阶段1占位逻辑）
-            logger.info(f"合同草稿生成任务已记录: {hetong_context}")
-            
-            # 阶段2：实现真正的合同生成逻辑
             try:
                 from services.hetong_guanli.hetong_service import HetongService
                 hetong_service = HetongService(db)
 
-                # 基于报价自动生成合同
                 hetong_response = hetong_service.create_hetong_from_baojia(
                     baojia_id=baojia_id,
                     created_by=payload.get("queren_ren_id", "system")
@@ -181,7 +193,6 @@ def handle_hetong_draft_triggered(payload: Dict[str, Any]) -> None:
 
                 logger.info(f"合同自动生成成功: 合同ID={hetong_response.id}, 合同编号={hetong_response.hetong_bianhao}")
 
-                # 记录成功日志
                 _log_baojia_business_event(
                     db, baojia_id, "contract_generated",
                     f"合同自动生成成功，合同编号: {hetong_response.hetong_bianhao}",
@@ -189,9 +200,8 @@ def handle_hetong_draft_triggered(payload: Dict[str, Any]) -> None:
                 )
 
             except Exception as contract_error:
-                logger.error(f"合同自动生成失败: {contract_error}")
+                logger.error(f"合同自动生成失败: {contract_error}", exc_info=True)
 
-                # 记录失败日志
                 _log_baojia_business_event(
                     db, baojia_id, "contract_generation_failed",
                     f"合同自动生成失败: {str(contract_error)}",
@@ -203,13 +213,13 @@ def handle_hetong_draft_triggered(payload: Dict[str, Any]) -> None:
             
         except Exception as e:
             db.rollback()
-            logger.error(f"处理合同草稿触发事件时发生数据库错误: {e}")
+            logger.error(f"处理合同草稿触发事件时发生数据库错误: {e}", exc_info=True)
             raise
         finally:
             db.close()
             
     except Exception as e:
-        logger.error(f"处理合同草稿触发事件失败: {e}")
+        logger.error(f"处理合同草稿触发事件失败: {e}", exc_info=True)
         raise
 
 

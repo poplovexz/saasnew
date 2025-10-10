@@ -23,8 +23,8 @@ class Kehu(BaseModel):
     tongyi_shehui_xinyong_daima = Column(
         String(18),
         unique=True,
-        nullable=False,
-        comment="统一社会信用代码"
+        nullable=True,
+        comment="统一社会信用代码 - 可选，客户后续可完善"
     )
     
     chengli_riqi = Column(

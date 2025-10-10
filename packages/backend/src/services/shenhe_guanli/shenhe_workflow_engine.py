@@ -93,6 +93,11 @@ class ShenheWorkflowEngine:
         current_step.shenhe_shijian = datetime.now()
         current_step.fujian_lujing = action_data.get("fujian_lujing")
         current_step.fujian_miaoshu = action_data.get("fujian_miaoshu")
+        
+        zidingyi_shuju = action_data.get("zidingyi_shuju")
+        if zidingyi_shuju:
+            current_step.zidingyi_shuju = json.dumps(zidingyi_shuju, ensure_ascii=False)
+        
         current_step.jilu_zhuangtai = "yichuli"
         current_step.updated_at = datetime.now()
         
@@ -218,19 +223,42 @@ class ShenheWorkflowEngine:
         return workflow_id
     
     def _create_audit_steps(self, workflow_id: str, rule: ShenheGuize, trigger_data: Dict[str, Any]):
-        """创建审核步骤"""
+        """创建审核步骤 - 使用配置中直接指定的审核人ID"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         flow_config = json.loads(rule.shenhe_liucheng_peizhi) if isinstance(rule.shenhe_liucheng_peizhi, str) else rule.shenhe_liucheng_peizhi
         steps = flow_config.get("steps", [])
         
         for step_config in steps:
-            # 检查步骤条件
             if not self._check_step_condition(step_config, trigger_data):
                 continue
             
-            # 查找审核人 (这里简化处理，实际应该根据角色查找具体用户)
-            auditor_id = self._find_auditor_by_role(step_config.get("role"))
+            auditor_id = step_config.get("auditor_id")
+            
             if not auditor_id:
+                role = step_config.get("role")
+                if role:
+                    auditor_id = self._find_auditor_by_role(role)
+                    logger.warning(f"使用旧的role方式查找审核人: role={role}, auditor_id={auditor_id}")
+            
+            if not auditor_id:
+                logger.warning(f"步骤 {step_config.get('step')} 未配置审核人ID且无法通过role查找")
                 continue
+            
+            from models.yonghu_guanli import Yonghu
+            auditor = self.db.query(Yonghu).filter(
+                Yonghu.id == auditor_id,
+                Yonghu.is_deleted == "N",
+                Yonghu.zhuangtai == "active"
+            ).first()
+            
+            if not auditor:
+                logger.warning(f"审核人不存在或未激活: auditor_id={auditor_id}")
+                continue
+            
+            form_fields = step_config.get("form_fields", [])
+            form_config = json.dumps(form_fields, ensure_ascii=False) if form_fields else None
             
             step = ShenheJilu(
                 id=str(uuid.uuid4()),
@@ -238,8 +266,9 @@ class ShenheWorkflowEngine:
                 buzhou_bianhao=step_config.get("step"),
                 buzhou_mingcheng=step_config.get("name"),
                 shenhe_ren_id=auditor_id,
-                jilu_zhuangtai="daichuli" if step_config.get("step") == 1 else "daichuli",
-                qiwang_chuli_shijian=datetime.now() + timedelta(days=3),  # 默认3天处理期限
+                biaodan_peizhi=form_config,
+                jilu_zhuangtai="daichuli",
+                qiwang_chuli_shijian=datetime.now() + timedelta(days=3),
                 created_at=datetime.now(),
                 updated_at=datetime.now(),
                 is_deleted="N"
@@ -272,12 +301,33 @@ class ShenheWorkflowEngine:
         return True
     
     def _find_auditor_by_role(self, role: str) -> Optional[str]:
-        """根据角色查找审核人"""
-        # 这里应该实现根据角色查找用户的逻辑
-        # 简化处理，返回固定的用户ID
-        role_user_map = {
-            "supervisor": "supervisor_user_id",
-            "manager": "manager_user_id", 
-            "director": "director_user_id"
-        }
-        return role_user_map.get(role)
+        """根据角色查找审核人（从数据库查询）- 向后兼容旧配置"""
+        from models.yonghu_guanli import Jiaose, YonghuJiaose, Yonghu
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        jiaose = self.db.query(Jiaose).filter(
+            Jiaose.jiaose_bianma == role,
+            Jiaose.is_deleted == "N"
+        ).first()
+        
+        if not jiaose:
+            logger.warning(f"未找到角色: {role}")
+            return None
+        
+        yonghu_jiaose = self.db.query(YonghuJiaose).join(
+            Yonghu, YonghuJiaose.yonghu_id == Yonghu.id
+        ).filter(
+            YonghuJiaose.jiaose_id == jiaose.id,
+            YonghuJiaose.is_deleted == "N",
+            Yonghu.is_deleted == "N",
+            Yonghu.zhuangtai == "active"
+        ).first()
+        
+        if not yonghu_jiaose:
+            logger.warning(f"角色 {role} 没有关联的活跃用户")
+            return None
+        
+        logger.info(f"为角色 {role} 找到审核人: {yonghu_jiaose.yonghu_id}")
+        return yonghu_jiaose.yonghu_id

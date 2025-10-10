@@ -11,7 +11,28 @@ class ShenheGuizeBase(BaseModel):
     guize_mingcheng: str = Field(..., min_length=1, max_length=200, description="规则名称")
     guize_leixing: str = Field(..., description="规则类型")
     chufa_tiaojian: Dict[str, Any] = Field(..., description="触发条件配置")
-    shenhe_liucheng_peizhi: Dict[str, Any] = Field(..., description="审核流程配置")
+    shenhe_liucheng_peizhi: Dict[str, Any] = Field(
+        ..., 
+        description="""审核流程配置（JSON格式）示例:
+{
+  "steps": [
+    {
+      "step": 1,
+      "name": "主管审核",
+      "auditor_id": "user_uuid_here",
+      "form_fields": [
+        {
+          "field_name": "审批意见",
+          "field_type": "textarea",
+          "required": true
+        }
+      ],
+      "condition": "amount >= 10000"
+    }
+  ]
+}
+"""
+    )
     shi_qiyong: str = Field(default="Y", description="是否启用")
     paixu: int = Field(default=0, description="排序号")
     guize_miaoshu: Optional[str] = Field(None, description="规则描述")

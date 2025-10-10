@@ -95,6 +95,18 @@ class ShenheJilu(BaseModel):
         comment="备注"
     )
     
+    biaodan_peizhi = Column(
+        Text,
+        nullable=True,
+        comment="表单字段配置（JSON格式）- 从审核规则继承"
+    )
+    
+    zidingyi_shuju = Column(
+        Text,
+        nullable=True,
+        comment="自定义表单数据（JSON格式）- 审核时提交"
+    )
+    
     # 关联关系
     shenhe_liucheng = relationship(
         "ShenheLiucheng",
